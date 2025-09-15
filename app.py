@@ -1,6 +1,7 @@
 import os
 import uuid
 import subprocess
+import shlex
 from enum import Enum
 from typing import List, Optional
 from flask_openapi3 import OpenAPI, Info, Tag
@@ -181,6 +182,7 @@ def initiate_download(body: InitiateDownloadRequest):
     ]
 
     # Start process in background
+    app.logger.info("Executing yt-dlp command [%s]: [%s]", download_uuid, shlex.join(cmd))
     try:
         subprocess.Popen(
             cmd,
