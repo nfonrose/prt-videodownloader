@@ -2,6 +2,7 @@ import os
 import uuid
 import subprocess
 import shlex
+import threading
 from enum import Enum
 from typing import List, Optional
 from flask_openapi3 import OpenAPI, Info, Tag
@@ -184,12 +185,24 @@ def initiate_download(body: InitiateDownloadRequest):
     # Start process in background
     app.logger.info("Executing yt-dlp command [%s]: [%s]", download_uuid, shlex.join(cmd))
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
             start_new_session=True,
         )
+        # Async log subprocess output
+        def _log_stream(stream, is_err=False):
+            logger = app.logger.error if is_err else app.logger.info
+            for line in iter(stream.readline, ''):
+                line = line.rstrip('\n')
+                if line:
+                    logger("DOWNLOAD[%s] %s: %s", download_uuid, "stderr" if is_err else "stdout", line)
+            stream.close()
+        threading.Thread(target=_log_stream, args=(proc.stdout, False), daemon=True).start()
+        threading.Thread(target=_log_stream, args=(proc.stderr, True), daemon=True).start()
         # Update status to DOWNLOADING
         try:
             dl.status = DownloadStatusEnum.DOWNLOADING
