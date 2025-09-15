@@ -3,11 +3,13 @@ import uuid
 import subprocess
 import shlex
 import threading
+import logging
+import json
 from enum import Enum
 from typing import List, Optional
 from datetime import datetime, timedelta
 from flask_openapi3 import OpenAPI, Info, Tag
-from flask import jsonify
+from flask import jsonify, request
 from pydantic import BaseModel, Field
 from sqlalchemy import (
     create_engine,
@@ -90,6 +92,7 @@ Base.metadata.create_all(bind=engine)
 # Initialize Flask OpenAPI app
 info = Info(title="PRT VideoDownloader API", version="0.1.0")
 app = OpenAPI(__name__, info=info)
+logger = logging.getLogger(__name__)
 
 hello_tag = Tag(name="hello", description="Hello world operations")
 initiate_tag = Tag(name="downloads", description="Download operations")
@@ -138,6 +141,53 @@ def hello_world():
 @app.get("/healthz", summary="Health check")
 def healthz():
     return jsonify({"status": "ok"})
+
+
+# Middleware to log requests as cURL commands in multi-line format
+@app.before_request
+def log_request_as_curl():
+    # Skip logging for certain endpoints if needed (e.g., health checks)
+    if request.path == '/favicon.ico':  # Example: Skip favicon requests
+        return
+
+    # Start building the cURL command
+    curl_cmd = ["curl"]
+
+    # Add the HTTP method and URL on the first line
+    curl_cmd.append(f"-X {request.method} '{request.url}'")
+
+    # Add headers on separate lines
+    for header_name, header_value in request.headers.items():
+        # Skip headers that are not typically needed in cURL
+        if header_name.lower() in ('content-length', 'host'):
+            continue
+        curl_cmd.append(f"-H '{header_name}: {header_value}'")
+
+    # Add request body for POST, PUT, etc. on separate lines
+    if request.method in ('POST', 'PUT', 'PATCH') and request.get_data():
+        # Handle JSON data
+        if request.is_json:
+            data = json.dumps(request.get_json(), indent=None)
+            curl_cmd.append(f"--data-raw '{data}'")
+        # Handle form data
+        elif request.form:
+            for key, value in request.form.items():
+                curl_cmd.append(f"-d '{key}={value}'")
+        # Handle raw data
+        else:
+            data = request.get_data(as_text=True)
+            curl_cmd.append(f"--data-raw '{data}'")
+
+    # Join the command parts with backslash and newline for multi-line format
+    # First line (curl -X METHOD URL) has no backslash
+    curl_command = f"{curl_cmd[0]} {curl_cmd[1]}"  # Combine 'curl' and '-X METHOD URL' on first line
+    # Add remaining arguments, each on a new line with backslash
+    for part in curl_cmd[2:]:
+        curl_command += f" \\\n  {part}"
+
+    # Log the multi-line cURL command
+    logger.info(f" -------------------------------------------------------------------------------------------------------------------------------------\n{curl_command}")
+
 
 
 @app.post(
