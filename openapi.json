@@ -54,6 +54,17 @@
               }
             ],
             "title": "Requestcreationdateepochms"
+          },
+          "fileName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
           }
         },
         "required": [
@@ -79,6 +90,19 @@
           "errorMessage"
         ],
         "title": "ErrorResponse",
+        "type": "object"
+      },
+      "GetPublicURLResponse": {
+        "properties": {
+          "publicURL": {
+            "title": "Publicurl",
+            "type": "string"
+          }
+        },
+        "required": [
+          "publicURL"
+        ],
+        "title": "GetPublicURLResponse",
         "type": "object"
       },
       "InitiateDownloadRequest": {
@@ -138,6 +162,14 @@
         ],
         "title": "ListDownloadsResponse",
         "type": "object"
+      },
+      "URLTypeEnum": {
+        "enum": [
+          "HTTPS",
+          "S3"
+        ],
+        "title": "URLTypeEnum",
+        "type": "string"
       },
       "ValidationErrorModel": {
         "properties": {
@@ -324,6 +356,73 @@
           }
         },
         "summary": "List downloads",
+        "tags": [
+          "downloads"
+        ]
+      }
+    },
+    "/downloads/publicURL": {
+      "get": {
+        "operationId": "get_public_url_downloads_publicURL_get",
+        "parameters": [
+          {
+            "description": "UUID of the download request",
+            "in": "query",
+            "name": "videoDownloadUUID",
+            "required": true,
+            "schema": {
+              "description": "UUID of the download request",
+              "title": "Videodownloaduuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Type of URL to generate: HTTPS or S3",
+            "in": "query",
+            "name": "urlType",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/URLTypeEnum",
+              "description": "Type of URL to generate: HTTPS or S3"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetPublicURLResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "418": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "I'm a Teapot"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ValidationErrorModel"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          }
+        },
+        "summary": "Get public URL for a downloaded video",
         "tags": [
           "downloads"
         ]

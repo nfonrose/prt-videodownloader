@@ -24,6 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Text
+from urllib.parse import quote
 
 # Configuration for SQLAlchemy with SQLite
 PATHPREFIX_FOR_DEVLOCAL_ENV = "/Users/teevity/Dev/misc/1.prtVideoDownloader"
@@ -33,6 +34,14 @@ DB_ENV_VAR = "PRT_VIDEODOWNLOADER_SQLITEFILEPATH"
 # Video data path configuration
 DEFAULT_DATA_PATH = PATHPREFIX_FOR_DEVLOCAL_ENV + "/opt/prt/prt-videodownloader/data"
 DATA_ENV_VAR = "PRT_VIDEODOWNLOADER_VIDEODATAPATH"
+
+# Public URL base configuration
+DEFAULT_HTTPS_BASE_URL = "https://prt.teevity.com/videodownloader"
+HTTPS_BASEURL_ENV_VAR = "PRT_VIDEODOWNLOADER_HTTPSBASEURL"
+# For S3, we rely on a base URL that points to the RustFS S3-compatible endpoint.
+# This can be set to something like: s3://prt-videodownloader/data or http(s) URL served by rustfs.
+DEFAULT_S3_BASE_URL = "s3://prt-videodownloader/data"
+S3_BASEURL_ENV_VAR = "PRT_VIDEODOWNLOADER_S3BASEURL"
 
 
 def ensure_dir(path: str) -> str:
@@ -52,6 +61,29 @@ def get_db_path() -> str:
 def get_data_path() -> str:
     path = os.getenv(DATA_ENV_VAR, DEFAULT_DATA_PATH)
     return ensure_dir(path)
+
+
+def get_https_base_url() -> str:
+    return os.getenv(HTTPS_BASEURL_ENV_VAR, DEFAULT_HTTPS_BASE_URL)
+
+
+def get_s3_base_url() -> str:
+    return os.getenv(S3_BASEURL_ENV_VAR, DEFAULT_S3_BASE_URL)
+
+
+def build_public_url(file_name: str, url_type: "URLTypeEnum") -> str:
+    # Ensure file name is URL-encoded
+    encoded_name = quote(file_name)
+    if url_type == URLTypeEnum.HTTPS:
+        base = get_https_base_url().rstrip("/")
+        return f"{base}/data/{encoded_name}"
+    elif url_type == URLTypeEnum.S3:
+        base = get_s3_base_url().rstrip("/")
+        return f"{base}/{encoded_name}"
+    else:
+        # Fallback; should not happen
+        base = get_https_base_url().rstrip("/")
+        return f"{base}/data/{encoded_name}"
 
 
 # Initialize SQLAlchemy engine and session factory
@@ -86,6 +118,8 @@ class Download(Base):
     sizeInBytes = Column(BigInteger, nullable=True)
     progress = Column(Float, nullable=True)  # 0.0 to 100.0 or 0.0 to 1.0 depending on later choice
     requestCreationDateEpochMs = Column(BigInteger, nullable=True)
+    # Name of the output file stored under the data directory; basename only
+    fileName = Column(String(4096), nullable=True)
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     updatedAt = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -109,6 +143,11 @@ logger = logging.getLogger(__name__)
 
 hello_tag = Tag(name="hello", description="Hello world operations")
 initiate_tag = Tag(name="downloads", description="Download operations")
+
+
+class URLTypeEnum(str, Enum):
+    HTTPS = "HTTPS"
+    S3 = "S3"
 
 
 class InitiateDownloadRequest(BaseModel):
@@ -136,11 +175,21 @@ class DownloadListItem(BaseModel):
     downloadSizeInBytes: Optional[int] = None
     progress: Optional[float] = None
     requestCreationDateEpochMs: Optional[str] = None
+    fileName: Optional[str] = None
     errorMessage: Optional[str] = None
 
 
 class ListDownloadsResponse(BaseModel):
     downloads: List[DownloadListItem]
+
+
+class GetPublicURLQuery(BaseModel):
+    videoDownloadUUID: str = Field(..., description="UUID of the download request")
+    urlType: URLTypeEnum = Field(..., description="Type of URL to generate: HTTPS or S3")
+
+
+class GetPublicURLResponse(BaseModel):
+    publicURL: str
 
 
 def error_response(error_code: str, error_message: str):
@@ -284,6 +333,8 @@ def initiate_download(body: InitiateDownloadRequest):
         # Collect stderr lines to determine error cause on failure (bounded buffer)
         stderr_lines_buffer = {"lines": []}
         stderr_max_lines = 200
+        # Track output filenames captured from yt-dlp logs
+        file_capture = {"merge": None, "already": None, "dest": []}
 
         # Async log subprocess output
         def _log_stream(stream, is_err=False):
@@ -305,10 +356,54 @@ def initiate_download(body: InitiateDownloadRequest):
                     except Exception:
                         pass
 
-                # Detect "already downloaded" message from yt-dlp on either stream
+                # Capture output file paths and detect "already downloaded" messages
                 try:
                     low = line.lower()
-                    if "has already been downloaded" in low or "[download]" in low and "already" in low and "downloaded" in low:
+                    # Merger final output filename
+                    if "merging formats into" in low:
+                        try:
+                            fn = None
+                            if '"' in line:
+                                sidx = line.find('"')
+                                eidx = line.rfind('"')
+                                if eidx > sidx >= 0:
+                                    fn = line[sidx + 1:eidx]
+                            if not fn:
+                                k = low.rfind("into ")
+                                if k != -1:
+                                    fn = line[k + 5:].strip().strip('"')
+                            if fn:
+                                base = os.path.basename(fn)
+                                file_capture["merge"] = base
+                                app.logger.info("DOWNLOAD[%s] detected merged output file: %s", download_uuid, base)
+                        except Exception:
+                            pass
+                    # Destination lines for downloaded streams (video/audio)
+                    if "[download]" in low and "destination:" in low:
+                        try:
+                            k = low.find("destination:")
+                            fn = line[k + len("destination:"):].strip().strip('"') if k != -1 else None
+                            if fn:
+                                base = os.path.basename(fn)
+                                file_capture["dest"].append(base)
+                        except Exception:
+                            pass
+                    # Already downloaded line, also contains filename
+                    if "has already been downloaded" in low:
+                        try:
+                            endk = low.find("has already been downloaded")
+                            prefix = line[:endk].strip()
+                            rb = prefix.rfind("] ")
+                            if rb != -1:
+                                prefix = prefix[rb + 2:]
+                            fn = prefix.strip().strip('"') if prefix else None
+                            if fn:
+                                base = os.path.basename(fn)
+                                file_capture["already"] = base
+                        except Exception:
+                            pass
+                    # Maintain boolean flag for status
+                    if "has already been downloaded" in low or ("[download]" in low and "already" in low and "downloaded" in low):
                         if not already_downloaded_flag["val"]:
                             already_downloaded_flag["val"] = True
                             app.logger.info("DOWNLOAD[%s] detected already-downloaded message", download_uuid)
@@ -399,6 +494,38 @@ def initiate_download(body: InitiateDownloadRequest):
                         # Ensure progress shows complete
                         if d.progress is None or d.progress < 100.0:
                             d.progress = 100.0
+                        # Determine and persist final output filename (no UUID in name)
+                        try:
+                            data_path_loc = get_data_path()
+                            best_name = None
+                            # Prefer merged output filename
+                            if file_capture.get("merge"):
+                                best_name = file_capture.get("merge")
+                            # Fallbacks
+                            if not best_name:
+                                # Prefer last destination that doesn't look like an intermediate '.f###.' file
+                                dests = file_capture.get("dest") or []
+                                non_inter = [n for n in dests if ".f" not in n]
+                                if non_inter:
+                                    best_name = non_inter[-1]
+                                elif dests:
+                                    best_name = dests[-1]
+                            if not best_name and file_capture.get("already"):
+                                best_name = file_capture.get("already")
+                            if best_name:
+                                d.fileName = best_name
+                                # Persist size
+                                try:
+                                    fullp = os.path.join(data_path_loc, best_name)
+                                    stat = os.stat(fullp)
+                                    if stat.st_size is not None and (d.sizeInBytes is None or d.sizeInBytes <= 0):
+                                        d.sizeInBytes = int(stat.st_size)
+                                except Exception:
+                                    pass
+                            else:
+                                app.logger.debug("DOWNLOAD[%s] could not detect output file name from logs", download_uuid)
+                        except Exception as e2:
+                            app.logger.debug("DOWNLOAD[%s] failed while setting output file name: %s", download_uuid, e2)
                     else:
                         d.status = DownloadStatusEnum.FAILED
                         # Upsert error message into DownloadError table
@@ -496,6 +623,7 @@ def list_downloads(query: ListDownloadsQuery):
                     downloadSizeInBytes=r.sizeInBytes,
                     progress=r.progress,
                     requestCreationDateEpochMs=req_created_human,
+                    fileName=r.fileName,
                     errorMessage=error_by_uuid.get(r.uuid),
                 )
             )
@@ -507,7 +635,79 @@ def list_downloads(query: ListDownloadsQuery):
         session.close()
 
 
-if __name__ == "__main__":
-    # Allow external connections (not limited to 127.0.0.1)
-    port = int(os.getenv("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port)
+@app.get(
+    "/downloads/publicURL",
+    tags=[initiate_tag],
+    summary="Get public URL for a downloaded video",
+    responses={
+        200: GetPublicURLResponse,
+        418: ErrorResponse,
+    },
+)
+def get_public_url(query: GetPublicURLQuery):
+    session = SessionLocal()
+    try:
+        d = session.get(Download, query.videoDownloadUUID)
+        if not d:
+            return error_response("invalidDownloadUUID", "download UUID not found")
+
+        # Check status
+        st = d.status.value if isinstance(d.status, DownloadStatusEnum) else str(d.status)
+        if st == DownloadStatusEnum.FAILED.value:
+            # Retrieve error message if any
+            err_msg = None
+            try:
+                derr = session.get(DownloadError, query.videoDownloadUUID)
+                if derr:
+                    err_msg = derr.errorMessage
+            except Exception:
+                pass
+            return error_response("downloadFailed", err_msg or "The download failed")
+        if st not in (DownloadStatusEnum.COMPLETED.value, DownloadStatusEnum.COMPLETED_ALREADYDOWNLOADED.value):
+            return error_response("downloadNotReady", "The download is not completed yet")
+
+        # Determine file name
+        file_name = d.fileName
+        data_path = get_data_path()
+        if not file_name:
+            # Try to locate by UUID prefix (new naming scheme)
+            prefix = f"{d.uuid}-"
+            try:
+                candidates = []
+                for name in os.listdir(data_path):
+                    if name.startswith(prefix):
+                        try:
+                            fullp = os.path.join(data_path, name)
+                            stat = os.stat(fullp)
+                            candidates.append((stat.st_mtime, name))
+                        except Exception:
+                            pass
+                if candidates:
+                    candidates.sort(key=lambda t: t[0], reverse=True)
+                    file_name = candidates[0][1]
+                    # persist on record
+                    try:
+                        d.fileName = file_name
+                        session.add(d)
+                        session.commit()
+                    except Exception:
+                        session.rollback()
+                else:
+                    return error_response("fileNotFound", "Video file not found on disk yet")
+            except Exception as e2:
+                return error_response("fileLookupError", f"Failed to locate video file: {e2}")
+        else:
+            # Verify it still exists
+            try:
+                if not os.path.exists(os.path.join(data_path, file_name)):
+                    return error_response("fileNotFound", "Video file not found on disk")
+            except Exception:
+                pass
+
+        # Build URL
+        url = build_public_url(file_name, query.urlType)
+        return jsonify(GetPublicURLResponse(publicURL=url).model_dump())
+    except Exception as e:
+        return error_response("publicUrlError", f"Failed to compute public URL: {e}")
+    finally:
+        session.close()
