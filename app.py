@@ -23,6 +23,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import Text
 
 # Configuration for SQLAlchemy with SQLite
 PATHPREFIX_FOR_DEVLOCAL_ENV = "/Users/teevity/Dev/misc/1.prtVideoDownloader"
@@ -89,6 +90,15 @@ class Download(Base):
     updatedAt = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
+class DownloadError(Base):
+    __tablename__ = "download_errors"
+
+    # Reuse UUID as primary key; one error per download (latest overwrites)
+    uuid = Column(String(36), primary_key=True, nullable=False)
+    errorMessage = Column(Text, nullable=False)
+    createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
 # Create tables if they don't exist
 Base.metadata.create_all(bind=engine)
 
@@ -126,6 +136,7 @@ class DownloadListItem(BaseModel):
     downloadSizeInBytes: Optional[int] = None
     progress: Optional[float] = None
     requestDataEpochMs: Optional[int] = None
+    errorMessage: Optional[str] = None
 
 
 class ListDownloadsResponse(BaseModel):
@@ -390,6 +401,18 @@ def initiate_download(body: InitiateDownloadRequest):
                             d.progress = 100.0
                     else:
                         d.status = DownloadStatusEnum.FAILED
+                        # Upsert error message into DownloadError table
+                        try:
+                            # Prefer detected cause; otherwise, set a generic message
+                            err_msg = cause if 'cause' in locals() and cause else "Unknown error"
+                            existing = s.get(DownloadError, download_uuid)
+                            if existing:
+                                existing.errorMessage = err_msg
+                                s.add(existing)
+                            else:
+                                s.add(DownloadError(uuid=download_uuid, errorMessage=err_msg))
+                        except Exception as e2:
+                            app.logger.debug("DOWNLOAD[%s] failed to upsert error message: %s", download_uuid, e2)
                     s.add(d)
                     s.commit()
             except Exception as e:
@@ -446,6 +469,17 @@ def list_downloads(query: ListDownloadsQuery):
         if query.onlyShowOngoingDownloads:
             q = q.filter(Download.status.in_([DownloadStatusEnum.PENDING, DownloadStatusEnum.DOWNLOADING]))
         rows = q.order_by(Download.createdAt.desc()).all()
+
+        # Fetch error messages for these downloads in one query
+        uuids = [r.uuid for r in rows]
+        error_by_uuid = {}
+        if uuids:
+            try:
+                err_rows = session.query(DownloadError).filter(DownloadError.uuid.in_(uuids)).all()
+                error_by_uuid = {er.uuid: er.errorMessage for er in err_rows}
+            except Exception as e2:
+                app.logger.debug("Failed to fetch error messages for list_downloads: %s", e2)
+
         items: List[DownloadListItem] = []
         for r in rows:
             items.append(
@@ -455,6 +489,7 @@ def list_downloads(query: ListDownloadsQuery):
                     downloadSizeInBytes=r.sizeInBytes,
                     progress=r.progress,
                     requestDataEpochMs=r.requestDataEpochMs,
+                    errorMessage=error_by_uuid.get(r.uuid),
                 )
             )
         resp = ListDownloadsResponse(downloads=items)
