@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # Configuration for SQLAlchemy with SQLite
-DEFAULT_DB_PATH = "/opt/prt/prt-videodownloader/db/prt-videodownloader.sqlite"
+DEFAULT_DB_PATH = "/Users/teevity/Dev/misc/1.prtVideoDownloader/opt/prt/prt-videodownloader/db/prt-videodownloader.sqlite"
 DB_ENV_VAR = "PRT_VIDEODOWNLOADER_SQLITEFILEPATH"
 
 def get_db_path() -> str:
