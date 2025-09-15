@@ -26,7 +26,7 @@ DEFAULT_DB_PATH = (PATHPREFIX_FOR_DEVLOCAL_ENV + "/opt/prt/prt-videodownloader/d
 DB_ENV_VAR = "PRT_VIDEODOWNLOADER_SQLITEFILEPATH"
 
 # Video data path configuration
-DEFAULT_DATA_PATH = PATHPREFIX_FOR_DEVLOCAL_ENV + "/opt/prt/prt-videodownloader/data/"
+DEFAULT_DATA_PATH = PATHPREFIX_FOR_DEVLOCAL_ENV + "/opt/prt/prt-videodownloader/data"
 DATA_ENV_VAR = "PRT_VIDEODOWNLOADER_VIDEODATAPATH"
 
 
