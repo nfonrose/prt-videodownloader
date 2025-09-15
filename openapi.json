@@ -444,6 +444,66 @@
           "hello"
         ]
       }
+    },
+    "/redirectToHTTPSVideoDownloadPublicURL": {
+      "get": {
+        "operationId": "redirect_to_https_video_download_public_url_redirectToHTTPSVideoDownloadPublicURL_get",
+        "parameters": [
+          {
+            "description": "The ID (UUID) of the video download task",
+            "in": "query",
+            "name": "video_id",
+            "required": true,
+            "schema": {
+              "description": "The ID (UUID) of the video download task",
+              "title": "Video Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Number of times this endpoint has redirected so far",
+            "in": "query",
+            "name": "retryCounter",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Number of times this endpoint has redirected so far",
+              "minimum": 0.0,
+              "title": "Retrycounter",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "418": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "I'm a Teapot"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ValidationErrorModel"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          }
+        },
+        "summary": "Redirect to HTTPS public URL of a video when ready",
+        "tags": [
+          "downloads"
+        ]
+      }
     }
   },
   "tags": [

@@ -5,11 +5,12 @@ import shlex
 import threading
 import logging
 import json
+import time
 from enum import Enum
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 from flask_openapi3 import OpenAPI, Info, Tag
-from flask import jsonify, request
+from flask import jsonify, request, redirect
 from pydantic import BaseModel, Field
 from sqlalchemy import (
     create_engine,
@@ -42,6 +43,10 @@ HTTPS_BASEURL_ENV_VAR = "PRT_VIDEODOWNLOADER_HTTPSBASEURL"
 # This can be set to something like: s3://prt-videodownloader/data or http(s) URL served by rustfs.
 DEFAULT_S3_BASE_URL = "s3://prt-videodownloader/data"
 S3_BASEURL_ENV_VAR = "PRT_VIDEODOWNLOADER_S3BASEURL"
+
+# Redirect polling configuration
+MAX_RETRIES = int(os.getenv("PRT_VIDEODOWNLOADER_MAX_RETRIES", "5"))
+RETRY_SLEEP_SECONDS = float(os.getenv("PRT_VIDEODOWNLOADER_RETRY_SLEEP_SECONDS", "3"))
 
 
 def ensure_dir(path: str) -> str:
@@ -190,6 +195,11 @@ class GetPublicURLQuery(BaseModel):
 
 class GetPublicURLResponse(BaseModel):
     publicURL: str
+
+
+class RedirectToHTTPSQuery(BaseModel):
+    video_id: str = Field(..., description="The ID (UUID) of the video download task")
+    retryCounter: int = Field(0, ge=0, description="Number of times this endpoint has redirected so far")
 
 
 def error_response(error_code: str, error_message: str):
@@ -709,5 +719,117 @@ def get_public_url(query: GetPublicURLQuery):
         return jsonify(GetPublicURLResponse(publicURL=url).model_dump())
     except Exception as e:
         return error_response("publicUrlError", f"Failed to compute public URL: {e}")
+    finally:
+        session.close()
+
+
+
+@app.get(
+    "/redirectToHTTPSVideoDownloadPublicURL",
+    tags=[initiate_tag],
+    summary="Redirect to HTTPS public URL of a video when ready",
+    responses={
+        418: ErrorResponse,
+    },
+)
+def redirect_to_https_video_download_public_url(query: RedirectToHTTPSQuery):
+    current_retry = query.retryCounter if query.retryCounter is not None else 0
+
+    # Enforce retry limit
+    if current_retry >= MAX_RETRIES:
+        return error_response("downloadNotReadyInTime", "Download not ready in time")
+
+    session = SessionLocal()
+
+    def _redirect_if_ready(d_obj: Download):
+        # Determine file name and return redirect to HTTPS public URL if possible
+        st_local = d_obj.status.value if isinstance(d_obj.status, DownloadStatusEnum) else str(d_obj.status)
+        if st_local in (DownloadStatusEnum.COMPLETED.value, DownloadStatusEnum.COMPLETED_ALREADYDOWNLOADED.value):
+            file_name = d_obj.fileName
+            data_path_local = get_data_path()
+            if not file_name:
+                # Try to locate by UUID prefix
+                prefix = f"{d_obj.uuid}-"
+                try:
+                    candidates = []
+                    for name in os.listdir(data_path_local):
+                        if name.startswith(prefix):
+                            try:
+                                fullp = os.path.join(data_path_local, name)
+                                stat = os.stat(fullp)
+                                candidates.append((stat.st_mtime, name))
+                            except Exception:
+                                pass
+                    if candidates:
+                        candidates.sort(key=lambda t: t[0], reverse=True)
+                        file_name_found = candidates[0][1]
+                        try:
+                            d_obj.fileName = file_name_found
+                            session.add(d_obj)
+                            session.commit()
+                        except Exception:
+                            session.rollback()
+                        url_local = build_public_url(file_name_found, URLTypeEnum.HTTPS)
+                        return redirect(url_local, code=302)
+                    else:
+                        return None
+                except Exception:
+                    return None
+            else:
+                try:
+                    if not os.path.exists(os.path.join(data_path_local, file_name)):
+                        return None
+                except Exception:
+                    pass
+                url_local = build_public_url(file_name, URLTypeEnum.HTTPS)
+                return redirect(url_local, code=302)
+        return None
+
+    try:
+        d = session.get(Download, query.video_id)
+        if not d:
+            return error_response("invalidDownloadUUID", "download UUID not found")
+
+        # Handle failed state explicitly
+        st = d.status.value if isinstance(d.status, DownloadStatusEnum) else str(d.status)
+        if st == DownloadStatusEnum.FAILED.value:
+            # Retrieve error message if any
+            err_msg = None
+            try:
+                derr = session.get(DownloadError, query.video_id)
+                if derr:
+                    err_msg = derr.errorMessage
+            except Exception:
+                pass
+            return error_response("downloadFailed", err_msg or "The download failed")
+
+        # If ready now, redirect to public HTTPS URL
+        resp = _redirect_if_ready(d)
+        if resp is not None:
+            return resp
+
+        # Not ready: sleep, then re-check once
+        try:
+            time.sleep(RETRY_SLEEP_SECONDS)
+        except Exception:
+            pass
+
+        # Refresh and re-check
+        try:
+            session.expire(d)
+        except Exception:
+            pass
+        d2 = session.get(Download, query.video_id)
+        if d2:
+            resp2 = _redirect_if_ready(d2)
+            if resp2 is not None:
+                return resp2
+
+        # Still not ready → redirect back to this endpoint with incremented retry counter
+        next_retry = current_retry + 1
+        next_url = f"/redirectToHTTPSVideoDownloadPublicURL?video_id={quote(query.video_id)}&retryCounter={next_retry}"
+        return redirect(next_url, code=302)
+    except Exception as e:
+        return error_response("redirectError", f"Failed to process redirect: {e}")
     finally:
         session.close()
