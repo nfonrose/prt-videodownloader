@@ -7,7 +7,7 @@ import logging
 import json
 from enum import Enum
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask_openapi3 import OpenAPI, Info, Tag
 from flask import jsonify, request
 from pydantic import BaseModel, Field
@@ -135,7 +135,7 @@ class DownloadListItem(BaseModel):
     downloadStatus: str
     downloadSizeInBytes: Optional[int] = None
     progress: Optional[float] = None
-    requestCreationDateEpochMs: Optional[int] = None
+    requestCreationDateEpochMs: Optional[str] = None
     errorMessage: Optional[str] = None
 
 
@@ -228,7 +228,7 @@ def initiate_download(body: InitiateDownloadRequest):
             uuid=download_uuid,
             videoURL=video_url,
             status=DownloadStatusEnum.PENDING,
-            requestCreationDateEpochMs=int(datetime.utcnow().timestamp() * 1000),
+            requestCreationDateEpochMs=int(datetime.now(timezone.utc).timestamp() * 1000),
         )
         session.add(dl)
         session.commit()
@@ -464,7 +464,7 @@ def list_downloads(query: ListDownloadsQuery):
     session = SessionLocal()
     try:
         minutes = query.overLastPeriodDurationInMinutes if query.overLastPeriodDurationInMinutes is not None else 60
-        cutoff = datetime.utcnow() - timedelta(minutes=minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
         q = session.query(Download).filter(Download.createdAt >= cutoff)
         if query.onlyShowOngoingDownloads:
             q = q.filter(Download.status.in_([DownloadStatusEnum.PENDING, DownloadStatusEnum.DOWNLOADING]))
@@ -482,13 +482,20 @@ def list_downloads(query: ListDownloadsQuery):
 
         items: List[DownloadListItem] = []
         for r in rows:
+            # Transform epoch ms to human-readable UTC string if present
+            req_created_human = None
+            try:
+                if r.requestCreationDateEpochMs is not None:
+                    req_created_human = datetime.fromtimestamp(r.requestCreationDateEpochMs / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
+            except Exception:
+                req_created_human = None
             items.append(
                 DownloadListItem(
                     downloadUUID=r.uuid,
                     downloadStatus=r.status.value if isinstance(r.status, DownloadStatusEnum) else str(r.status),
                     downloadSizeInBytes=r.sizeInBytes,
                     progress=r.progress,
-                    requestCreationDateEpochMs=r.requestCreationDateEpochMs,
+                    requestCreationDateEpochMs=req_created_human,
                     errorMessage=error_by_uuid.get(r.uuid),
                 )
             )
