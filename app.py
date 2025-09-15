@@ -5,6 +5,7 @@ import shlex
 import threading
 from enum import Enum
 from typing import List, Optional
+from datetime import datetime, timedelta
 from flask_openapi3 import OpenAPI, Info, Tag
 from flask import jsonify
 from pydantic import BaseModel, Field
@@ -106,6 +107,22 @@ class InitiateDownloadResponse(BaseModel):
 class ErrorResponse(BaseModel):
     errorCode: str
     errorMessage: str
+
+
+class ListDownloadsQuery(BaseModel):
+    overLastPeriodDurationInMinutes: int = Field(60, ge=1, description="Time window in minutes to include downloads from now back to this many minutes")
+    onlyShowOngoingDownloads: bool = Field(False, description="If true, only include downloads that are currently ongoing (PENDING or DOWNLOADING)")
+
+
+class DownloadListItem(BaseModel):
+    downloadUUID: str
+    downloadStatus: str
+    downloadSizeInBytes: Optional[int] = None
+    progress: Optional[float] = None
+
+
+class ListDownloadsResponse(BaseModel):
+    downloads: List[DownloadListItem]
 
 
 def error_response(error_code: str, error_message: str):
@@ -228,6 +245,42 @@ def initiate_download(body: InitiateDownloadRequest):
         except Exception:
             session.rollback()
         return error_response("processStartError", f"Failed to start yt-dlp: {e}")
+    finally:
+        session.close()
+
+
+@app.get(
+    "/downloads/list",
+    tags=[initiate_tag],
+    summary="List downloads",
+    responses={
+        200: ListDownloadsResponse,
+        418: ErrorResponse,
+    },
+)
+def list_downloads(query: ListDownloadsQuery):
+    session = SessionLocal()
+    try:
+        minutes = query.overLastPeriodDurationInMinutes if query.overLastPeriodDurationInMinutes is not None else 60
+        cutoff = datetime.utcnow() - timedelta(minutes=minutes)
+        q = session.query(Download).filter(Download.createdAt >= cutoff)
+        if query.onlyShowOngoingDownloads:
+            q = q.filter(Download.status.in_([DownloadStatusEnum.PENDING, DownloadStatusEnum.DOWNLOADING]))
+        rows = q.order_by(Download.createdAt.desc()).all()
+        items: List[DownloadListItem] = []
+        for r in rows:
+            items.append(
+                DownloadListItem(
+                    downloadUUID=r.uuid,
+                    downloadStatus=r.status.value if isinstance(r.status, DownloadStatusEnum) else str(r.status),
+                    downloadSizeInBytes=r.sizeInBytes,
+                    progress=r.progress,
+                )
+            )
+        resp = ListDownloadsResponse(downloads=items)
+        return jsonify(resp.model_dump())
+    except Exception as e:
+        return error_response("listError", f"Failed to list downloads: {e}")
     finally:
         session.close()
 
