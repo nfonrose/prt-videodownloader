@@ -24,7 +24,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Configuration for SQLAlchemy with SQLite
-PATHPREFIX_FOR_DEVLOCAL_ENV = "/Users/teevity/Dev/misc/1.prtVideoDownloader/"
+PATHPREFIX_FOR_DEVLOCAL_ENV = "/Users/teevity/Dev/misc/1.prtVideoDownloader"
 DEFAULT_DB_PATH = (PATHPREFIX_FOR_DEVLOCAL_ENV + "/opt/prt/prt-videodownloader/db/prt-videodownloader.sqlite")
 DB_ENV_VAR = "PRT_VIDEODOWNLOADER_SQLITEFILEPATH"
 
@@ -69,6 +69,7 @@ class DownloadStatusEnum(Enum):
     PENDING = "PENDING"
     DOWNLOADING = "DOWNLOADING"
     COMPLETED = "COMPLETED"
+    COMPLETED_ALREADYDOWNLOADED = "COMPLETED_ALREADYDOWNLOADED"
     FAILED = "FAILED"
 
 
@@ -227,6 +228,9 @@ def initiate_download(body: InitiateDownloadRequest):
         "bestvideo[height<=1080]+bestaudio/best",     # This was downloading all videos streams "bv*+ba/best",
         "-o",
         os.path.join(data_path, "%(title)s-%(id)s.%(ext)s"),
+        "--progress",
+        "--progress-template",
+        "download:%(progress._percent_str)s:%(progress.downloaded_bytes)s:%(progress.total_bytes)s",
     ]
 
     user_params: List[str] = []
@@ -260,16 +264,101 @@ def initiate_download(body: InitiateDownloadRequest):
             bufsize=1,
             start_new_session=True,
         )
+        # Shared flag to detect if yt-dlp reported the file was already downloaded
+        already_downloaded_flag = {"val": False}
+
         # Async log subprocess output
         def _log_stream(stream, is_err=False):
-            logger = app.logger.error if is_err else app.logger.info
+            log_fn = app.logger.error if is_err else app.logger.info
             for line in iter(stream.readline, ''):
                 line = line.rstrip('\n')
-                if line:
-                    logger("DOWNLOAD[%s] %s: %s", download_uuid, "stderr" if is_err else "stdout", line)
+                if not line:
+                    continue
+                # Always log raw line
+                log_fn("DOWNLOAD[%s] %s: %s", download_uuid, "stderr" if is_err else "stdout", line)
+
+                # Detect "already downloaded" message from yt-dlp on either stream
+                try:
+                    low = line.lower()
+                    if "has already been downloaded" in low or "[download]" in low and "already" in low and "downloaded" in low:
+                        if not already_downloaded_flag["val"]:
+                            already_downloaded_flag["val"] = True
+                            app.logger.info("DOWNLOAD[%s] detected already-downloaded message", download_uuid)
+                except Exception:
+                    pass
+
+                # Parse progress lines emitted via --progress-template
+                try:
+                    if not is_err and line.startswith("download:"):
+                        # Expected format: download:<percent%>:<downloaded_bytes>:<total_bytes>
+                        parts = line.split(":", 4)
+                        if len(parts) >= 4:
+                            percent_raw = parts[1].strip().rstrip('%')
+                            downloaded_raw = parts[2].strip()
+                            total_raw = parts[3].strip()
+                            progress_val = None
+                            size_total = None
+                            try:
+                                progress_val = float(percent_raw)
+                            except Exception:
+                                progress_val = None
+                            try:
+                                size_total = int(total_raw)
+                            except Exception:
+                                size_total = None
+                            # Update DB with progress and size
+                            if progress_val is not None or size_total is not None:
+                                s = SessionLocal()
+                                try:
+                                    d = s.get(Download, download_uuid)
+                                    if d:
+                                        if progress_val is not None:
+                                            d.progress = progress_val
+                                        if size_total is not None:
+                                            d.sizeInBytes = size_total
+                                        s.add(d)
+                                        s.commit()
+                                except Exception as e:
+                                    s.rollback()
+                                    app.logger.debug("DOWNLOAD[%s] progress update failed: %s", download_uuid, e)
+                                finally:
+                                    s.close()
+                except Exception as e:
+                    app.logger.debug("DOWNLOAD[%s] progress parse error: %s", download_uuid, e)
             stream.close()
         threading.Thread(target=_log_stream, args=(proc.stdout, False), daemon=True).start()
         threading.Thread(target=_log_stream, args=(proc.stderr, True), daemon=True).start()
+
+        # Watcher thread to capture process completion and update final status
+        def _wait_and_finalize():
+            rc = proc.wait()
+            try:
+                app.logger.info("DOWNLOAD[%s] process completed with return code: %s", download_uuid, rc)
+            except Exception:
+                pass
+            s = SessionLocal()
+            try:
+                d = s.get(Download, download_uuid)
+                if d:
+                    if rc == 0:
+                        if already_downloaded_flag.get("val"):
+                            d.status = DownloadStatusEnum.COMPLETED_ALREADYDOWNLOADED
+                        else:
+                            d.status = DownloadStatusEnum.COMPLETED
+                        # Ensure progress shows complete
+                        if d.progress is None or d.progress < 100.0:
+                            d.progress = 100.0
+                    else:
+                        d.status = DownloadStatusEnum.FAILED
+                    s.add(d)
+                    s.commit()
+            except Exception as e:
+                s.rollback()
+                app.logger.error("DOWNLOAD[%s] failed to update final status: %s", download_uuid, e)
+            finally:
+                s.close()
+        threading.Thread(target=_wait_and_finalize, daemon=True).start()
+
         # Update status to DOWNLOADING
         try:
             dl.status = DownloadStatusEnum.DOWNLOADING
