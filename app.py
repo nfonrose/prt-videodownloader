@@ -20,6 +20,7 @@ from sqlalchemy import (
     Float,
     DateTime,
     func,
+    text,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
 
@@ -83,6 +84,7 @@ class Download(Base):
     status = Column(SAEnum(DownloadStatusEnum), nullable=False, default=DownloadStatusEnum.PENDING)
     sizeInBytes = Column(BigInteger, nullable=True)
     progress = Column(Float, nullable=True)  # 0.0 to 100.0 or 0.0 to 1.0 depending on later choice
+    requestDataEpochMs = Column(BigInteger, nullable=True)
     createdAt = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     updatedAt = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -123,6 +125,7 @@ class DownloadListItem(BaseModel):
     downloadStatus: str
     downloadSizeInBytes: Optional[int] = None
     progress: Optional[float] = None
+    requestDataEpochMs: Optional[int] = None
 
 
 class ListDownloadsResponse(BaseModel):
@@ -214,6 +217,7 @@ def initiate_download(body: InitiateDownloadRequest):
             uuid=download_uuid,
             videoURL=video_url,
             status=DownloadStatusEnum.PENDING,
+            requestDataEpochMs=int(datetime.utcnow().timestamp() * 1000),
         )
         session.add(dl)
         session.commit()
@@ -414,6 +418,7 @@ def list_downloads(query: ListDownloadsQuery):
                     downloadStatus=r.status.value if isinstance(r.status, DownloadStatusEnum) else str(r.status),
                     downloadSizeInBytes=r.sizeInBytes,
                     progress=r.progress,
+                    requestDataEpochMs=r.requestDataEpochMs,
                 )
             )
         resp = ListDownloadsResponse(downloads=items)
