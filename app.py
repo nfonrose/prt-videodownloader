@@ -270,6 +270,9 @@ def initiate_download(body: InitiateDownloadRequest):
         )
         # Shared flag to detect if yt-dlp reported the file was already downloaded
         already_downloaded_flag = {"val": False}
+        # Collect stderr lines to determine error cause on failure (bounded buffer)
+        stderr_lines_buffer = {"lines": []}
+        stderr_max_lines = 200
 
         # Async log subprocess output
         def _log_stream(stream, is_err=False):
@@ -280,6 +283,16 @@ def initiate_download(body: InitiateDownloadRequest):
                     continue
                 # Always log raw line
                 log_fn("DOWNLOAD[%s] %s: %s", download_uuid, "stderr" if is_err else "stdout", line)
+
+                # If stderr, keep a copy to extract cause later
+                if is_err:
+                    try:
+                        stderr_lines_buffer["lines"].append(line)
+                        if len(stderr_lines_buffer["lines"]) > stderr_max_lines:
+                            # Drop oldest to keep memory bounded
+                            del stderr_lines_buffer["lines"][0:len(stderr_lines_buffer["lines"]) - stderr_max_lines]
+                    except Exception:
+                        pass
 
                 # Detect "already downloaded" message from yt-dlp on either stream
                 try:
@@ -340,6 +353,29 @@ def initiate_download(body: InitiateDownloadRequest):
                 app.logger.info("DOWNLOAD[%s] process completed with return code: %s", download_uuid, rc)
             except Exception:
                 pass
+            # If failed, try to extract an error cause from captured stderr
+            if rc != 0:
+                cause = None
+                try:
+                    lines = stderr_lines_buffer.get("lines") or []
+                    # Prefer the last line containing 'ERROR:'
+                    for l in reversed(lines):
+                        if "ERROR:" in l or l.strip().startswith("ERROR"):
+                            cause = l.strip()
+                            break
+                    if cause is None and lines:
+                        # Fallback to the last non-empty stderr line
+                        for l in reversed(lines):
+                            if l and l.strip():
+                                cause = l.strip()
+                                break
+                except Exception:
+                    pass
+                if cause:
+                    app.logger.error("DOWNLOAD[%s] failure cause detected from stderr: %s", download_uuid, cause)
+                else:
+                    app.logger.error("DOWNLOAD[%s] failure cause: unknown (no stderr output)", download_uuid)
+
             s = SessionLocal()
             try:
                 d = s.get(Download, download_uuid)
