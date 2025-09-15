@@ -224,7 +224,7 @@ def initiate_download(body: InitiateDownloadRequest):
     data_path = get_data_path()
     mandatory_params = [
         "-f",
-        "bv*+ba/best",
+        "bestvideo[height<=1080]+bestaudio/best",     # This was downloading all videos streams "bv*+ba/best",
         "-o",
         os.path.join(data_path, "%(title)s-%(id)s.%(ext)s"),
     ]
