@@ -1,0 +1,45 @@
+version: "3.9"
+
+networks:
+  prt-videodownloader-net:
+    name: prt-videodownloader-net
+
+volumes:
+  prt_videodownloader_db: {}
+
+services:
+  prt-videodownloader-api:
+    container_name: prt-videodownloader-api
+    image: prt-videodownloader-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - PORT=9080
+      - PRT_VIDEODOWNLOADER_VIDEODATAPATH=/opt/prt/prt-videodownloader/data
+      - PRT_VIDEODOWNLOADER_SQLITEFILEPATH=/opt/prt/prt-videodownloader/db/prt-videodownloader.sqlite
+      - PRT_VIDEODOWNLOADER_HTTPSBASEURL=http://localhost:8080/videodownloader
+    volumes:
+      # Shared data directory (host <-> both containers)
+      - /Users/teevity/Dev/misc/1.prtVideoDownloader/opt/prt/prt-videodownloader/data:/opt/prt/prt-videodownloader/data:rw
+      # Persist the SQLite DB within a named volume (optional)
+      - prt_videodownloader_db:/opt/prt/prt-videodownloader/db
+    ports:
+      - "9380:9080"
+    restart: unless-stopped
+    networks:
+      - prt-videodownloader-net
+
+  prt-videodownloader-nginx:
+    container_name: prt-videodownloader-nginx
+    image: nginx:1.27-alpine
+    depends_on:
+      - prt-videodownloader-api
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /Users/teevity/Dev/misc/1.prtVideoDownloader/opt/prt/prt-videodownloader/data:/opt/prt/prt-videodownloader/data:rw
+    ports:
+      - "9381:80"
+    restart: unless-stopped
+    networks:
+      - prt-videodownloader-net

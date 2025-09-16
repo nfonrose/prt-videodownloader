@@ -37,7 +37,7 @@ DEFAULT_DATA_PATH = PATHPREFIX_FOR_DEVLOCAL_ENV + "/opt/prt/prt-videodownloader/
 DATA_ENV_VAR = "PRT_VIDEODOWNLOADER_VIDEODATAPATH"
 
 # Public URL base configuration
-DEFAULT_HTTPS_BASE_URL = "https://prt.teevity.com/videodownloader"
+DEFAULT_HTTPS_BASE_URL = "http://localhost:9381/videodownloader"   # Production URL https://prt.teevity.com/videodownloader
 HTTPS_BASEURL_ENV_VAR = "PRT_VIDEODOWNLOADER_HTTPSBASEURL"
 # For S3, we rely on a base URL that points to the RustFS S3-compatible endpoint.
 # This can be set to something like: s3://prt-videodownloader/data or http(s) URL served by rustfs.
