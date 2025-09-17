@@ -81,14 +81,14 @@ def build_public_url(file_name: str, url_type: "URLTypeEnum") -> str:
     encoded_name = quote(file_name)
     if url_type == URLTypeEnum.HTTPS:
         base = get_https_base_url().rstrip("/")
-        return f"{base}/data/{encoded_name}"
+        return f"{base}/{encoded_name}"
     elif url_type == URLTypeEnum.S3:
         base = get_s3_base_url().rstrip("/")
         return f"{base}/{encoded_name}"
     else:
         # Fallback; should not happen
         base = get_https_base_url().rstrip("/")
-        return f"{base}/data/{encoded_name}"
+        return f"{base}/{encoded_name}"
 
 
 # Initialize SQLAlchemy engine and session factory
@@ -265,7 +265,7 @@ def log_request_as_curl():
 
 
 @app.post(
-    "/downloads/initiate",
+    "/videodownloader/api/downloads/initiate",
     tags=[initiate_tag],
     summary="Initiate a video download",
     responses={
@@ -589,7 +589,7 @@ def initiate_download(body: InitiateDownloadRequest):
 
 
 @app.get(
-    "/downloads/list",
+    "/videodownloader/api/downloads/list",
     tags=[initiate_tag],
     summary="List downloads",
     responses={
@@ -646,7 +646,7 @@ def list_downloads(query: ListDownloadsQuery):
 
 
 @app.get(
-    "/downloads/publicURL",
+    "/videodownloader/api/downloads/publicURL",
     tags=[initiate_tag],
     summary="Get public URL for a downloaded video",
     responses={
@@ -725,7 +725,7 @@ def get_public_url(query: GetPublicURLQuery):
 
 
 @app.get(
-    "/redirectToHTTPSVideoDownloadPublicURL",
+    "/videodownloader/api/redirectToHTTPSVideoDownloadPublicURL",
     tags=[initiate_tag],
     summary="Redirect to HTTPS public URL of a video when ready",
     responses={

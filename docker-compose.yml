@@ -24,6 +24,8 @@ services:
       - ${PRT_OPT_BASEPATH}/data:/opt/prt/prt-videodownloader/data:rw
       # Persist the SQLite DB within a named volume (optional)
       - prt_videodownloader_db:/opt/prt/prt-videodownloader/db
+    ports:
+      - "9480:8080"
     restart: unless-stopped
     networks:
       - prt-videodownloader-net
