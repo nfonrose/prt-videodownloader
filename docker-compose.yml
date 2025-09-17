@@ -15,17 +15,15 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      - PORT=9080
+      - PORT=8080
       - PRT_VIDEODOWNLOADER_VIDEODATAPATH=/opt/prt/prt-videodownloader/data
       - PRT_VIDEODOWNLOADER_SQLITEFILEPATH=/opt/prt/prt-videodownloader/db/prt-videodownloader.sqlite
-      - PRT_VIDEODOWNLOADER_HTTPSBASEURL=http://localhost:8080/videodownloader
+      - PRT_VIDEODOWNLOADER_HTTPSBASEURL=https://prtlabs.teevity.com:9443/videodownloader/data
     volumes:
       # Shared data directory (host <-> both containers)
-      - /Users/teevity/Dev/misc/1.prtVideoDownloader/opt/prt/prt-videodownloader/data:/opt/prt/prt-videodownloader/data:rw
+      - ${PRT_OPT_BASEPATH}/data:/opt/prt/prt-videodownloader/data:rw
       # Persist the SQLite DB within a named volume (optional)
       - prt_videodownloader_db:/opt/prt/prt-videodownloader/db
-    ports:
-      - "9380:9080"
     restart: unless-stopped
     networks:
       - prt-videodownloader-net
@@ -37,9 +35,11 @@ services:
       - prt-videodownloader-api
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - /Users/teevity/Dev/misc/1.prtVideoDownloader/opt/prt/prt-videodownloader/data:/opt/prt/prt-videodownloader/data:rw
+      - ${PRT_OPT_BASEPATH}/certs/live/teevity.com:/etc/letsencrypt:ro
+      - ${PRT_OPT_BASEPATH}/data:/opt/prt/prt-videodownloader/data:rw
+      - ${PRT_VIDEODOWNLOAD_PROJECT}/openapi.json:/opt/prt/prt-videodownloader/openapi.json:rw
     ports:
-      - "9381:80"
+      - "9443:443"
     restart: unless-stopped
     networks:
       - prt-videodownloader-net
