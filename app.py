@@ -37,7 +37,7 @@ DEFAULT_DATA_PATH = PATHPREFIX_FOR_DEVLOCAL_ENV + "/opt/prt/prt-videodownloader/
 DATA_ENV_VAR = "PRT_VIDEODOWNLOADER_VIDEODATAPATH"
 
 # Public URL base configuration
-DEFAULT_HTTPS_BASE_URL = "http://localhost:9381/videodownloader"   # Production URL https://prt.teevity.com/videodownloader
+DEFAULT_HTTPS_BASE_URL = "https://127.0.0.1:9443/videodownloader"   # Production URL https://prt.teevity.com:9443/videodownloader
 HTTPS_BASEURL_ENV_VAR = "PRT_VIDEODOWNLOADER_HTTPSBASEURL"
 # For S3, we rely on a base URL that points to the RustFS S3-compatible endpoint.
 # This can be set to something like: s3://prt-videodownloader/data or http(s) URL served by rustfs.
@@ -81,14 +81,14 @@ def build_public_url(file_name: str, url_type: "URLTypeEnum") -> str:
     encoded_name = quote(file_name)
     if url_type == URLTypeEnum.HTTPS:
         base = get_https_base_url().rstrip("/")
-        return f"{base}/data/{encoded_name}"
+        return f"{base}/{encoded_name}"
     elif url_type == URLTypeEnum.S3:
         base = get_s3_base_url().rstrip("/")
         return f"{base}/{encoded_name}"
     else:
         # Fallback; should not happen
         base = get_https_base_url().rstrip("/")
-        return f"{base}/data/{encoded_name}"
+        return f"{base}/{encoded_name}"
 
 
 # Initialize SQLAlchemy engine and session factory
@@ -265,7 +265,7 @@ def log_request_as_curl():
 
 
 @app.post(
-    "/downloads/initiate",
+    "/videodownloader/api/downloads/initiate",
     tags=[initiate_tag],
     summary="Initiate a video download",
     responses={
@@ -589,7 +589,7 @@ def initiate_download(body: InitiateDownloadRequest):
 
 
 @app.get(
-    "/downloads/list",
+    "/videodownloader/api/downloads/list",
     tags=[initiate_tag],
     summary="List downloads",
     responses={
@@ -646,7 +646,7 @@ def list_downloads(query: ListDownloadsQuery):
 
 
 @app.get(
-    "/downloads/publicURL",
+    "/videodownloader/api/downloads/publicURL",
     tags=[initiate_tag],
     summary="Get public URL for a downloaded video",
     responses={
@@ -725,7 +725,7 @@ def get_public_url(query: GetPublicURLQuery):
 
 
 @app.get(
-    "/redirectToHTTPSVideoDownloadPublicURL",
+    "/videodownloader/api/redirectToHTTPSVideoDownloadPublicURL",
     tags=[initiate_tag],
     summary="Redirect to HTTPS public URL of a video when ready",
     responses={
